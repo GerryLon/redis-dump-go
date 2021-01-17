@@ -2,6 +2,7 @@ package redisdump
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -9,7 +10,11 @@ import (
 	"strings"
 	"time"
 
-	radix "github.com/mediocregopher/radix/v3"
+	"github.com/go-redis/redis/v8"
+)
+
+var (
+	bgCtx = context.Background()
 )
 
 // 将字符串中的单引号替换为 \' 将整个字符串用单引号引起来
@@ -80,29 +85,36 @@ func RedisCmdSerializer(cmd []string) string {
 	return strings.Join(cmd, " ")
 }
 
-func dumpKeys(client radix.Client, keys []string, withTTL bool, logger *log.Logger, serializer func([]string) string) error {
+func dumpKeys(client redis.Client, keys []string, withTTL bool, logger *log.Logger,
+	serializer func([]string) string) error {
 	var err error
 	var redisCmd []string
 
 	for _, key := range keys {
 		var keyType string
 
-		err = client.Do(radix.Cmd(&keyType, "TYPE", key))
-		if err != nil {
+		statusCmd  := client.Type(bgCtx,  key)
+		if err = statusCmd.Err(); err != nil {
 			return err
 		}
+		keyType = statusCmd.Val()
+
+		var stringCmd *redis.StringCmd
+		var stringSliceCmd
 
 		switch keyType {
 		case "string":
-			var val string
-			if err = client.Do(radix.Cmd(&val, "GET", key)); err != nil {
+			stringCmd = client.Get(bgCtx, key)
+			if err = stringCmd.Err(); err!= nil {
 				return err
 			}
-			redisCmd = stringToRedisCmd(key, val)
+			redisCmd = stringToRedisCmd(key, stringCmd.Val())
 
 		case "list":
 			var val []string
-			if err = client.Do(radix.Cmd(&val, "LRANGE", key, "0", "-1")); err != nil {
+			client.LRange(bgCtx, key,  0, -1))
+
+			if err = ; err != nil {
 				return err
 			}
 			redisCmd = listToRedisCmd(key, val)
