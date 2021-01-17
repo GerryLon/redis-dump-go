@@ -12,30 +12,41 @@ import (
 	radix "github.com/mediocregopher/radix/v3"
 )
 
+// 将字符串中的单引号替换为 \' 将整个字符串用单引号引起来
+func quote(s ...string) []string {
+	for i := range s {
+		if strings.Contains(s[i], "'") {
+			s[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(s[i], `'`, `\'`))
+		}
+	}
+	return s
+}
+
 func ttlToRedisCmd(k string, val int64) []string {
 	return []string{"EXPIREAT", k, fmt.Sprint(time.Now().Unix() + val)}
 }
 
 func stringToRedisCmd(k, val string) []string {
-	return []string{"SET", k, val}
+	return []string{"SET", k, quote(val)[0]}
 }
 
 func hashToRedisCmd(k string, val map[string]string) []string {
 	cmd := []string{"HSET", k}
 	for k, v := range val {
-		cmd = append(cmd, k, v)
+		cmd = append(cmd, k, quote(v)[0])
 	}
 	return cmd
 }
 
 func setToRedisCmd(k string, val []string) []string {
 	cmd := []string{"SADD", k}
-	return append(cmd, val...)
+
+	return append(cmd, quote(val...)...)
 }
 
 func listToRedisCmd(k string, val []string) []string {
 	cmd := []string{"RPUSH", k}
-	return append(cmd, val...)
+	return append(cmd, quote(val...)...)
 }
 
 func zsetToRedisCmd(k string, val []string) []string {
@@ -48,7 +59,7 @@ func zsetToRedisCmd(k string, val []string) []string {
 			continue
 		}
 
-		cmd = append(cmd, v, key)
+		cmd = append(cmd, v, quote(key)[0])
 	}
 	return cmd
 }
@@ -120,7 +131,7 @@ func dumpKeys(client radix.Client, keys []string, withTTL bool, logger *log.Logg
 		case "none":
 
 		default:
-			return fmt.Errorf("Key %s is of unreconized type %s", key, keyType)
+			return fmt.Errorf("key %s is of unreconized type %s", key, keyType)
 		}
 
 		logger.Print(serializer(redisCmd))

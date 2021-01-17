@@ -52,7 +52,8 @@ func TestStringToRedisCmd(t *testing.T) {
 
 	testCases := []testCase{
 		{key: "city", value: "Paris", expected: []string{"SET", "city", "Paris"}},
-		{key: "fullname", value: "Jean-Paul Sartre", expected: []string{"SET", "fullname", "Jean-Paul Sartre"}},
+		{key: "fullname", value: "Jean-Paul Sartre", expected: []string{"SET", "fullname",
+			"Jean-Paul Sartre"}},
 		{key: "unicode", value: "😈", expected: []string{"SET", "unicode", "😈"}},
 	}
 
@@ -94,7 +95,8 @@ func TestZsetToRedisCmd(t *testing.T) {
 	}
 
 	testCases := []testCase{
-		{key: "todo", value: []string{"task1", "1", "task2", "2", "task3", "3"}, expected: []string{"ZADD", "todo", "1", "task1", "2", "task2", "3", "task3"}},
+		{key: "todo", value: []string{"task1", "1", "task2", "2", "task3", "3"}, expected: []string{"ZADD", "todo",
+			"1", "task1", "2", "task2", "3", "task3"}},
 	}
 
 	for _, test := range testCases {
