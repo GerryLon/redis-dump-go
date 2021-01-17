@@ -20,9 +20,9 @@ var (
 // 将字符串中的单引号替换为 \' 将整个字符串用单引号引起来
 func quote(s ...string) []string {
 	for i := range s {
-		if strings.Contains(s[i], "'") {
+		// if strings.Contains(s[i], "'") {
 			s[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(s[i], `'`, `\'`))
-		}
+		// }
 	}
 	return s
 }
@@ -85,7 +85,7 @@ func RedisCmdSerializer(cmd []string) string {
 	return strings.Join(cmd, " ")
 }
 
-func dumpKeys(client redis.Client, keys []string, withTTL bool, logger *log.Logger,
+func dumpKeys(client *redis.Client, keys []string, withTTL bool, logger *log.Logger,
 	serializer func([]string) string) error {
 	var err error
 	var redisCmd []string
@@ -93,51 +93,65 @@ func dumpKeys(client redis.Client, keys []string, withTTL bool, logger *log.Logg
 	for _, key := range keys {
 		var keyType string
 
-		statusCmd  := client.Type(bgCtx,  key)
+		statusCmd := client.Type(bgCtx, key)
 		if err = statusCmd.Err(); err != nil {
 			return err
 		}
 		keyType = statusCmd.Val()
 
 		var stringCmd *redis.StringCmd
-		var stringSliceCmd
+		var stringSliceCmd *redis.StringSliceCmd
+		var stringStringMapCmd *redis.StringStringMapCmd
+		var durationCmd *redis.DurationCmd
 
 		switch keyType {
 		case "string":
+			var val string
 			stringCmd = client.Get(bgCtx, key)
-			if err = stringCmd.Err(); err!= nil {
+			if err = stringCmd.Err(); err != nil {
 				return err
 			}
-			redisCmd = stringToRedisCmd(key, stringCmd.Val())
+			val = stringCmd.Val()
+			redisCmd = stringToRedisCmd(key, val)
 
 		case "list":
 			var val []string
-			client.LRange(bgCtx, key,  0, -1))
-
-			if err = ; err != nil {
+			stringSliceCmd = client.LRange(bgCtx, key, 0, -1)
+			if err = stringSliceCmd.Err(); err != nil {
 				return err
 			}
+			val = stringSliceCmd.Val()
 			redisCmd = listToRedisCmd(key, val)
 
 		case "set":
 			var val []string
-			if err = client.Do(radix.Cmd(&val, "SMEMBERS", key)); err != nil {
+			stringSliceCmd = client.SMembers(bgCtx, key)
+			if err = stringSliceCmd.Err(); err != nil {
 				return err
 			}
+			val = stringSliceCmd.Val()
 			redisCmd = setToRedisCmd(key, val)
 
 		case "hash":
 			var val map[string]string
-			if err = client.Do(radix.Cmd(&val, "HGETALL", key)); err != nil {
+			stringStringMapCmd = client.HGetAll(bgCtx, key)
+			if err = stringStringMapCmd.Err(); err != nil {
 				return err
 			}
+			val = stringStringMapCmd.Val()
 			redisCmd = hashToRedisCmd(key, val)
 
 		case "zset":
 			var val []string
-			if err = client.Do(radix.Cmd(&val, "ZRANGEBYSCORE", key, "-inf", "+inf", "WITHSCORES")); err != nil {
+			opt := &redis.ZRangeBy{
+				Min: "-inf",
+				Max: "+inf",
+			}
+			stringSliceCmd = client.ZRangeByScore(bgCtx, key, opt)
+			if err = stringSliceCmd.Err(); err != nil {
 				return err
 			}
+			val = stringSliceCmd.Val()
 			redisCmd = zsetToRedisCmd(key, val)
 
 		case "none":
@@ -150,9 +164,11 @@ func dumpKeys(client redis.Client, keys []string, withTTL bool, logger *log.Logg
 
 		if withTTL {
 			var ttl int64
-			if err = client.Do(radix.Cmd(&ttl, "TTL", key)); err != nil {
+			durationCmd = client.TTL(bgCtx, key)
+			if err = durationCmd.Err(); err != nil {
 				return err
 			}
+			ttl = int64(durationCmd.Val())
 			if ttl > 0 {
 				redisCmd = ttlToRedisCmd(key, ttl)
 				logger.Print(serializer(redisCmd))
@@ -163,7 +179,8 @@ func dumpKeys(client redis.Client, keys []string, withTTL bool, logger *log.Logg
 	return nil
 }
 
-func dumpKeysWorker(client radix.Client, keyBatches <-chan []string, withTTL bool, logger *log.Logger, serializer func([]string) string, errors chan<- error, done chan<- bool) {
+func dumpKeysWorker(client *redis.Client, keyBatches <-chan []string, withTTL bool, logger *log.Logger,
+	serializer func([]string) string, errors chan<- error, done chan<- bool) {
 	for keyBatch := range keyBatches {
 		if err := dumpKeys(client, keyBatch, withTTL, logger, serializer); err != nil {
 			errors <- err
@@ -207,29 +224,36 @@ func parseKeyspaceInfo(keyspaceInfo string) ([]uint8, error) {
 	return dbs, nil
 }
 
-func getDBIndexes(redisURL string) ([]uint8, error) {
-	client, err := radix.NewPool("tcp", redisURL, 1)
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
+// addr: host:port
+func getDBIndexes(addr, password string) ([]uint8, error) {
+	client := newRedisClient(addr, password)
 
 	var keyspaceInfo string
-	if err = client.Do(radix.Cmd(&keyspaceInfo, "INFO", "keyspace")); err != nil {
+	cmd := client.Info(bgCtx, "keyspace")
+	if err := cmd.Err(); err != nil {
 		return nil, err
 	}
+	keyspaceInfo = cmd.Val()
 
 	return parseKeyspaceInfo(keyspaceInfo)
 }
 
-func scanKeys(client radix.Client, db uint8, filter string, keyBatches chan<- []string, progressNotifications chan<- ProgressNotification) error {
-	keyBatchSize := 100
-	s := radix.NewScanner(client, radix.ScanOpts{Command: "SCAN", Pattern: filter, Count: keyBatchSize})
+func scanKeys(client *redis.Client, db uint8, filter string, keyBatches chan<- []string,
+	progressNotifications chan<- ProgressNotification) error {
+	var keyBatchSize int = 100
+	scanCmd := client.Scan(bgCtx, 0, filter, int64(keyBatchSize))
+	// s := radix.NewScanner(client, radix.ScanOpts{Command: "SCAN", Pattern: filter, Count: keyBatchSize})
+	if err := scanCmd.Err(); err != nil {
+		log.Println(err)
+		return err
+	}
 
-	nProcessed := 0
 	var key string
 	var keyBatch []string
-	for s.Next(&key) {
+	nProcessed := 0
+	iter := client.Scan(bgCtx, 0, filter, int64(keyBatchSize)).Iterator()
+	for iter.Next(bgCtx) {
+		key = iter.Val()
 		keyBatch = append(keyBatch, key)
 		if len(keyBatch) >= keyBatchSize {
 			nProcessed += len(keyBatch)
@@ -238,12 +262,16 @@ func scanKeys(client radix.Client, db uint8, filter string, keyBatches chan<- []
 			progressNotifications <- ProgressNotification{Db: db, Done: nProcessed}
 		}
 	}
+	if err := iter.Err(); err != nil {
+		log.Println(err)
+		return err
+	}
 
 	keyBatches <- keyBatch
 	nProcessed += len(keyBatch)
 	progressNotifications <- ProgressNotification{Db: db, Done: nProcessed}
 
-	return s.Close()
+	return nil
 }
 
 func min(a, b int) int {
@@ -253,13 +281,16 @@ func min(a, b int) int {
 	return b
 }
 
-func scanKeysLegacy(client radix.Client, db uint8, filter string, keyBatches chan<- []string, progressNotifications chan<- ProgressNotification) error {
+func scanKeysLegacy(client *redis.Client, db uint8, filter string, keyBatches chan<- []string,
+	progressNotifications chan<- ProgressNotification) error {
 	keyBatchSize := 100
 	var err error
+	cmd := client.Keys(bgCtx, filter)
 	var keys []string
-	if err = client.Do(radix.Cmd(&keys, "KEYS", filter)); err != nil {
+	if err = cmd.Err(); err != nil {
 		return err
 	}
+	keys = cmd.Val()
 
 	for i := 0; i < len(keys); i += keyBatchSize {
 		batchEnd := min(i+keyBatchSize, len(keys))
@@ -272,17 +303,17 @@ func scanKeysLegacy(client radix.Client, db uint8, filter string, keyBatches cha
 	return nil
 }
 
-// RedisURL builds a connect URL given a Host, port, db & password
-func RedisURL(redisHost string, redisPort string, redisDB string, redisPassword string) string {
-	switch {
-	case redisDB == "":
-		return "redis://:" + redisPassword + "@" + redisHost + ":" + fmt.Sprint(redisPort)
-	case redisDB != "":
-		return "redis://:" + redisPassword + "@" + redisHost + ":" + fmt.Sprint(redisPort) + "/" + redisDB
-	}
-
-	return ""
-}
+// // RedisURL builds a connect URL given a Host, port, db & password
+// func RedisURL(redisHost string, redisPort string, redisDB string, redisPassword string) string {
+// 	switch {
+// 	case redisDB == "":
+// 		return "redis://:" + redisPassword + "@" + redisHost + ":" + fmt.Sprint(redisPort)
+// 	case redisDB != "":
+// 		return "redis://:" + redisPassword + "@" + redisHost + ":" + fmt.Sprint(redisPort) + "/" + redisDB
+// 	}
+//
+// 	return ""
+// }
 
 // DumpDB dumps all keys from a single Redis DB
 func DumpDB(redisHost string, redisPort int, redisPassword string, db uint8, filter string, nWorkers int, withTTL bool, noscan bool, logger *log.Logger, serializer func([]string) string, progress chan<- ProgressNotification) error {
@@ -302,14 +333,9 @@ func DumpDB(redisHost string, redisPort int, redisPassword string, db uint8, fil
 		}
 	}()
 
-	redisURL := RedisURL(redisHost, fmt.Sprint(redisPort), fmt.Sprint(db), redisPassword)
-	client, err := radix.NewPool("tcp", redisURL, nWorkers)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	if err = client.Do(radix.Cmd(nil, "SELECT", fmt.Sprint(db))); err != nil {
+	client := newRedisClient(fmt.Sprintf("%s:%d", redisHost, redisPort), redisPassword)
+	cmd := client.Do(bgCtx, "SELECT", fmt.Sprint(db))
+	if err = cmd.Err(); err != nil {
 		return err
 	}
 	logger.Printf(serializer([]string{"SELECT", fmt.Sprint(db)}))
@@ -334,8 +360,8 @@ func DumpDB(redisHost string, redisPort int, redisPassword string, db uint8, fil
 // to the Logger logger. Progress notification informations
 // are regularly sent to the channel progressNotifications
 func DumpServer(redisHost string, redisPort int, redisPassword string, filter string, nWorkers int, withTTL bool, noscan bool, logger *log.Logger, serializer func([]string) string, progress chan<- ProgressNotification) error {
-	url := RedisURL(redisHost, fmt.Sprint(redisPort), "", redisPassword)
-	dbs, err := getDBIndexes(url)
+	// url := RedisURL(redisHost, fmt.Sprint(redisPort), "", redisPassword)
+	dbs, err := getDBIndexes(fmt.Sprintf("%s:%d", redisHost, redisPort), redisPassword)
 	if err != nil {
 		return err
 	}

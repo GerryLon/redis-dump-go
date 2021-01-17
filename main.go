@@ -32,7 +32,7 @@ func (p *progressLogger) drawProgress(to io.Writer, db uint8, nDumped int) {
 		return
 	}
 
-	fmt.Fprintf(to, "\rDatabase %d: %d element dumped", db, nDumped)
+	fmt.Fprintf(to, "\rDatabase %d: %d element dumped\n", db, nDumped)
 }
 
 func isFlagPassed(name string) bool {
@@ -46,6 +46,7 @@ func isFlagPassed(name string) bool {
 }
 
 func realMain() int {
+	log.SetFlags(log.Lshortfile|log.Ldate|log.Ltime)
 	var err error
 
 	host := flag.String("host", "127.0.0.1", "Server host")
@@ -111,6 +112,9 @@ func realMain() int {
 			return 1
 		}
 	}
+
+	redisdump.CloseRedisClient()
+
 	return 0
 }
 

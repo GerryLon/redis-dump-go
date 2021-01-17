@@ -2,7 +2,7 @@
 
 .PHONY: test build build-static docker-image docker-test docker-build-static
 
-export GOFLAGS=-mod=vendor
+# export GOFLAGS=-mod=vendor
 
 all: test build
 
@@ -11,7 +11,7 @@ test:
 	go vet ./...
 
 build:
-	go build -o bin/redis-dump-go
+	GO111MODULE=on go build -o bin/redis-dump-go
 
 build-static:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GO111MODULE=on go build -a -o bin/redis-dump-go
